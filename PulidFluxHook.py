@@ -381,12 +381,7 @@ def pulid_forward_orig_chroma(
     else:
         print(f"  - No identity features found, running without PuLID injection")
     
-    # 3) Use Chroma's native get_modulations to create proper structure
-    print(f"[PuLID-Chroma] 🎯 Using Chroma's native get_modulations")
-    mods = self.get_modulations(mod_vectors)
-    print(f"  - Modulations type: {type(mods)}")
-    
-    # 4) Process text and image inputs
+    # 3) Process text and image inputs
     txt = self.txt_in(context)
     img = self.img_in(img)
     
@@ -399,11 +394,13 @@ def pulid_forward_orig_chroma(
 
     blocks_replace = patches_replace.get("dit", {})
 
-    # 5) Process double blocks using Chroma's native structure
+    # 4) Process double blocks using Chroma's native get_modulations per block
     for i, block in enumerate(self.double_blocks):
-        # Get the proper modulation for this block from Chroma's get_modulations
-        img_mod, txt_mod = mods
-        vec = (img_mod[i], txt_mod[i])  # Use Chroma's slicing
+        # Get the proper modulation for this block using Chroma's API
+        double_mod = (
+            self.get_modulations(mod_vectors, "double_img", idx=i),
+            self.get_modulations(mod_vectors, "double_txt", idx=i),
+        )
 
         if ("double_block", i) in blocks_replace:
             def block_wrap(args):
@@ -418,7 +415,7 @@ def pulid_forward_orig_chroma(
 
             out = blocks_replace[("double_block", i)]({"img": img,
                                                        "txt": txt,
-                                                       "vec": vec,
+                                                       "vec": double_mod,
                                                        "pe": pe,
                                                        "attn_mask": attn_mask
                                                        },
@@ -430,27 +427,22 @@ def pulid_forward_orig_chroma(
             img = out["img"]
         else:
             print(f"[PuLID-Chroma] 🔄 Block {i} direct call")
-            img, txt = block(img=img, txt=txt, vec=vec, pe=pe, attn_mask=attn_mask)
+            img, txt = block(img=img, txt=txt, vec=double_mod, pe=pe, attn_mask=attn_mask)
 
         if control is not None:  # Controlnet
             control_i = control.get("input")
             if i < len(control_i):
                 add = control_i[i]
                 if add is not None:
-                    img[:, txt.shape[1]:, ...] += add
+                    # At this stage txt and img are NOT concatenated; add directly
+                    img += add
 
     img = torch.cat((txt, img), 1)
 
-    # 6) Process single blocks using Chroma's native structure  
+    # 5) Process single blocks using Chroma's native get_modulations per block
     for i, block in enumerate(self.single_blocks):
-        # Use Chroma's modulation structure for single blocks too
-        # Single blocks typically use a simpler format from the modulation
-        single_mod_idx = len(self.double_blocks) + i
-        if single_mod_idx < len(mods[0]):  # Check bounds
-            vec = mods[0][single_mod_idx]  # Use img modulation for single blocks
-        else:
-            # Fallback to last modulation if we run out
-            vec = mods[0][-1]
+        # Get the proper modulation for this single block using Chroma's API
+        single_mod = self.get_modulations(mod_vectors, "single", idx=i)
 
         if ("single_block", i) in blocks_replace:
             def block_wrap(args):
@@ -462,7 +454,7 @@ def pulid_forward_orig_chroma(
                 return out
 
             out = blocks_replace[("single_block", i)]({"img": img,
-                                                       "vec": vec,
+                                                       "vec": single_mod,
                                                        "pe": pe,
                                                        "attn_mask": attn_mask
                                                        },
@@ -472,7 +464,7 @@ def pulid_forward_orig_chroma(
                                                       })
             img = out["img"]
         else:
-            img = block(img, vec=vec, pe=pe, attn_mask=attn_mask)
+            img = block(img, vec=single_mod, pe=pe, attn_mask=attn_mask)
 
         if control is not None:  # Controlnet
             control_o = control.get("output")
@@ -483,10 +475,10 @@ def pulid_forward_orig_chroma(
 
     img = img[:, txt.shape[1]:, ...]
 
-    # 7) Final layer - use Chroma's native final modulation
+    # 6) Final layer - use Chroma's native final modulation
     print(f"[PuLID-Chroma] 🏁 Final layer processing")
-    # Call Chroma's native final layer without custom modulation
-    img = self.final_layer(img)
+    final_mod = self.get_modulations(mod_vectors, "final")
+    img = self.final_layer(img, vec=final_mod)
 
     del transformer_options[PatchKeys.running_net_model]
 
