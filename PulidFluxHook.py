@@ -351,6 +351,11 @@ def pulid_forward_orig_chroma(
     txt = self.txt_in(context)
     img = self.img_in(img)
     
+    print(f"[PuLID-Chroma] 📐 After input processing:")
+    print(f"  - txt shape: {txt.shape}")
+    print(f"  - img shape: {img.shape}")
+    print(f"  - img feature dim: {img.shape[-1]}")
+    
     ids = torch.cat((txt_ids, img_ids), dim=1)
     pe = self.pe_embedder(ids)
 
@@ -402,11 +407,24 @@ def pulid_forward_orig_chroma(
         txt_mod1 = ModulationParams(shift=txt_mod1_shift, scale=txt_mod1_scale)
         txt_mod2 = ModulationParams(shift=txt_mod2_shift, scale=txt_mod2_scale)
         
+        # Debug: Print the shapes before passing to block
+        print(f"[PuLID-Chroma] 🔍 Block {i} modulation shapes:")
+        print(f"  - img_mod1.shift: {img_mod1_shift.shape}, img_mod1.scale: {img_mod1_scale.shape}")
+        print(f"  - img_mod2.shift: {img_mod2_shift.shape}, img_mod2.scale: {img_mod2_scale.shape}")
+        print(f"  - txt_mod1.shift: {txt_mod1_shift.shape}, txt_mod1.scale: {txt_mod1_scale.shape}")
+        print(f"  - txt_mod2.shift: {txt_mod2_shift.shape}, txt_mod2.scale: {txt_mod2_scale.shape}")
+        
         vec = ((img_mod1, img_mod2), (txt_mod1, txt_mod2))
 
         if ("double_block", i) in blocks_replace:
             def block_wrap(args):
                 out = {}
+                print(f"[PuLID-Chroma] 🔄 Calling block {i} with PuLID patches")
+                print(f"  - img shape: {args['img'].shape}")
+                print(f"  - txt shape: {args['txt'].shape}")
+                print(f"  - vec type: {type(args['vec'])}")
+                if hasattr(args['vec'], '__len__'):
+                    print(f"  - vec structure: {len(args['vec'])} components")
                 out["img"], out["txt"] = block(img=args["img"],
                                                txt=args["txt"],
                                                vec=args["vec"],
@@ -427,6 +445,10 @@ def pulid_forward_orig_chroma(
             txt = out["txt"]
             img = out["img"]
         else:
+            print(f"[PuLID-Chroma] 🔄 Calling block {i} directly (no patches)")
+            print(f"  - img shape: {img.shape}")
+            print(f"  - txt shape: {txt.shape}")
+            print(f"  - vec type: {type(vec)}")
             img, txt = block(img=img, txt=txt, vec=vec, pe=pe, attn_mask=attn_mask)
 
         if control is not None:  # Controlnet
