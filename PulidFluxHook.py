@@ -474,7 +474,27 @@ def pulid_forward_orig_chroma(
         single_block_mod_end = double_blocks_used + (i + 1) * mod_per_block
         
         vec_chunk = mod_vectors[:, single_block_mod_start:single_block_mod_end]
-        vec = vec_chunk.mean(dim=1)  # [B, H] - single blocks might use simple tensor format
+        vec_raw = vec_chunk.mean(dim=1)  # [B, H] 
+        
+        # Ensure single block modulation is also 3072 dimensions
+        H = vec_raw.shape[-1]
+        if H < 3072:
+            # Repeat the vector to reach 3072 dimensions
+            repeats = (3072 + H - 1) // H  # Ceiling division
+            vec_raw = vec_raw.repeat(1, repeats)[:, :3072]  # [B, 3072]
+            print(f"[PuLID-Chroma] 📏 Single Block {i}: Expanded modulation from {H} to 3072 dims (repeated {repeats}x)")
+        elif H > 3072:
+            # Truncate to 3072 dimensions
+            vec_raw = vec_raw[:, :3072]  # [B, 3072]
+            print(f"[PuLID-Chroma] ✂️ Single Block {i}: Truncated modulation from {H} to 3072 dims")
+        else:
+            print(f"[PuLID-Chroma] ✅ Single Block {i}: Modulation already 3072 dims")
+        
+        # Create modulation object for single blocks - they need shift and scale attributes too
+        vec = ModulationParams(shift=vec_raw, scale=vec_raw, gate=vec_raw)
+        
+        print(f"[PuLID-Chroma] 🔍 Single Block {i} modulation shapes:")
+        print(f"  - shift: {vec_raw.shape}, scale: {vec_raw.shape}, gate: {vec_raw.shape}")
         
         if ("single_block", i) in blocks_replace:
             def block_wrap(args):
