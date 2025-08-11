@@ -27,8 +27,8 @@ def is_chroma_model(model):
     
     return is_chroma
 
-# Create a modulation object that has shift and scale attributes
-ModulationParams = namedtuple('ModulationParams', ['shift', 'scale'])
+# Create a modulation object that has shift, scale, and gate attributes (for Chroma)
+ModulationParams = namedtuple('ModulationParams', ['shift', 'scale', 'gate'])
 
 def set_model_dit_patch_replace(model, patch_kwargs, key):
     to = model.model_options["transformer_options"]
@@ -395,25 +395,29 @@ def pulid_forward_orig_chroma(
         # This matches the image tensor's feature dimension
         img_mod1_shift = vec_raw  # [B, 3072]
         img_mod1_scale = vec_raw  # [B, 3072] 
+        img_mod1_gate = vec_raw   # [B, 3072]
         img_mod2_shift = vec_raw  # [B, 3072]
         img_mod2_scale = vec_raw  # [B, 3072]
+        img_mod2_gate = vec_raw   # [B, 3072]
         txt_mod1_shift = vec_raw  # [B, 3072]
         txt_mod1_scale = vec_raw  # [B, 3072]
+        txt_mod1_gate = vec_raw   # [B, 3072]
         txt_mod2_shift = vec_raw  # [B, 3072]
         txt_mod2_scale = vec_raw  # [B, 3072]
+        txt_mod2_gate = vec_raw   # [B, 3072]
         
-        # Create modulation objects with shift and scale attributes
-        img_mod1 = ModulationParams(shift=img_mod1_shift, scale=img_mod1_scale)
-        img_mod2 = ModulationParams(shift=img_mod2_shift, scale=img_mod2_scale)
-        txt_mod1 = ModulationParams(shift=txt_mod1_shift, scale=txt_mod1_scale)
-        txt_mod2 = ModulationParams(shift=txt_mod2_shift, scale=txt_mod2_scale)
+        # Create modulation objects with shift, scale, and gate attributes
+        img_mod1 = ModulationParams(shift=img_mod1_shift, scale=img_mod1_scale, gate=img_mod1_gate)
+        img_mod2 = ModulationParams(shift=img_mod2_shift, scale=img_mod2_scale, gate=img_mod2_gate)
+        txt_mod1 = ModulationParams(shift=txt_mod1_shift, scale=txt_mod1_scale, gate=txt_mod1_gate)
+        txt_mod2 = ModulationParams(shift=txt_mod2_shift, scale=txt_mod2_scale, gate=txt_mod2_gate)
         
         # Debug: Print the shapes before passing to block
         print(f"[PuLID-Chroma] 🔍 Block {i} modulation shapes:")
-        print(f"  - img_mod1.shift: {img_mod1_shift.shape}, img_mod1.scale: {img_mod1_scale.shape}")
-        print(f"  - img_mod2.shift: {img_mod2_shift.shape}, img_mod2.scale: {img_mod2_scale.shape}")
-        print(f"  - txt_mod1.shift: {txt_mod1_shift.shape}, txt_mod1.scale: {txt_mod1_scale.shape}")
-        print(f"  - txt_mod2.shift: {txt_mod2_shift.shape}, txt_mod2.scale: {txt_mod2_scale.shape}")
+        print(f"  - img_mod1: shift={img_mod1_shift.shape}, scale={img_mod1_scale.shape}, gate={img_mod1_gate.shape}")
+        print(f"  - img_mod2: shift={img_mod2_shift.shape}, scale={img_mod2_scale.shape}, gate={img_mod2_gate.shape}")
+        print(f"  - txt_mod1: shift={txt_mod1_shift.shape}, scale={txt_mod1_scale.shape}, gate={txt_mod1_gate.shape}")
+        print(f"  - txt_mod2: shift={txt_mod2_shift.shape}, scale={txt_mod2_scale.shape}, gate={txt_mod2_gate.shape}")
         
         vec = ((img_mod1, img_mod2), (txt_mod1, txt_mod2))
 
