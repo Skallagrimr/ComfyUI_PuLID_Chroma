@@ -20,7 +20,7 @@ from comfy import model_management
 from .eva_clip.constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 from .encoders_flux import IDFormer, PerceiverAttentionCA
 
-from .PulidFluxHook import pulid_forward_orig, set_model_dit_patch_replace, pulid_enter, pulid_patch_double_blocks_after
+from .PulidFluxHook import pulid_forward_orig, pulid_forward_orig_chroma, set_model_dit_patch_replace, pulid_enter, pulid_patch_double_blocks_after, is_chroma_model
 from .patch_util import PatchKeys, add_model_patch_option, set_model_patch
 
 
@@ -608,7 +608,14 @@ def pulid_outer_sample_wrappers_with_override(wrapper_executor, noise, latent_im
     PULID_model_patch['latent_image_shape'] = latent_image.shape
 
     diffusion_model = cfg_guider.model_patcher.model.diffusion_model
-    set_hook(diffusion_model, pulid_forward_orig)
+    
+    # Choose appropriate forward function based on model type
+    if is_chroma_model(diffusion_model):
+        target_forward = pulid_forward_orig_chroma
+    else:
+        target_forward = pulid_forward_orig
+    
+    set_hook(diffusion_model, target_forward)
     try :
         out = wrapper_executor(noise, latent_image, sampler, sigmas, denoise_mask, callback, disable_pbar, seed)
     finally:

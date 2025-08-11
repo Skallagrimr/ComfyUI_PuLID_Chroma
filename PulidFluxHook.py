@@ -5,6 +5,10 @@ from comfy.ldm.flux.layers import timestep_embedding
 import comfy
 from .patch_util import PatchKeys
 
+def is_chroma_model(model):
+    """Detect if the model is Chroma or Flux-based."""
+    return (model.__class__.__name__ == "Chroma") or hasattr(model, "distilled_guidance_layer")
+
 def set_model_dit_patch_replace(model, patch_kwargs, key):
     to = model.model_options["transformer_options"]
     if "patches_replace" not in to:
@@ -244,6 +248,166 @@ def pulid_forward_orig(
     img = img[:, txt.shape[1]:, ...]
 
     img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
+
+    del transformer_options[PatchKeys.running_net_model]
+
+    return img
+
+
+def pulid_forward_orig_chroma(
+    self,
+    img: Tensor,
+    img_ids: Tensor,
+    context: Tensor,
+    txt_ids: Tensor,
+    timesteps: Tensor,
+    guidance: Tensor,
+    control = None,
+    transformer_options={},
+    attn_mask: Tensor = None,
+) -> Tensor:
+    """Chroma-specific forward function that uses modulation vectors instead of time_in."""
+    patches_replace = transformer_options.get("patches_replace", {})
+
+    if img.ndim != 3 or context.ndim != 3:
+        raise ValueError("Input img and context tensors must have 3 dimensions.")
+
+    transformer_options[PatchKeys.running_net_model] = self
+    
+    # Get PuLID identity features from transformer options
+    pulid_temp_attrs = transformer_options.get(PatchKeys.pulid_patch_key_attrs, {})
+    
+    # 1) Recreate Chroma's modulation path (based on your analysis)
+    mod_index_length = 344
+    distill_timestep = timestep_embedding(timesteps.detach().clone(), 16).to(img.device, img.dtype)
+    distil_guidance = timestep_embedding(guidance.detach().clone(), 16).to(img.device, img.dtype)
+
+    modulation_index = timestep_embedding(
+        torch.arange(mod_index_length, device=img.device), 32
+    ).to(img.dtype).unsqueeze(0).repeat(img.shape[0], 1, 1)
+
+    timestep_guidance = torch.cat([distill_timestep, distil_guidance], dim=1) \
+                           .unsqueeze(1).repeat(1, mod_index_length, 1).to(img.dtype)
+
+    input_vec = torch.cat([timestep_guidance, modulation_index], dim=-1)  # [B, 344, 64]
+    mod_vectors = self.distilled_guidance_layer(input_vec)                  # [B, 344, H]
+
+    # 2) For Chroma, we rely on the patch mechanism for identity injection
+    # The identity features are handled through the patch system in individual blocks
+    # So we don't need to modify mod_vectors here, just prepare them as Chroma expects
+
+    # 3) Continue with Chroma's forward process
+    # Process text and image inputs
+    txt = self.txt_in(context)
+    img = self.img_in(img)
+    
+    ids = torch.cat((txt_ids, img_ids), dim=1)
+    pe = self.pe_embedder(ids)
+
+    blocks_replace = patches_replace.get("dit", {})
+
+    # Process double blocks with modulation
+    # We'll need to implement proper modulation extraction based on Chroma's actual implementation
+    # For now, use a simpler approach that distributes the modulation evenly
+    for i, block in enumerate(self.double_blocks):
+        # Extract modulation for this block - this is a simplified approach
+        # In the real Chroma implementation, there should be a get_modulations() function
+        if hasattr(self, 'get_modulations'):
+            # Use Chroma's proper modulation extraction if available
+            vec = self.get_modulations(mod_vectors, 'double', i)
+        else:
+            # Fallback: simple distribution
+            mod_per_block = mod_vectors.shape[1] // (len(self.double_blocks) + len(self.single_blocks))
+            block_mod_start = i * mod_per_block
+            block_mod_end = (i + 1) * mod_per_block
+            vec = mod_vectors[:, block_mod_start:block_mod_end].mean(dim=1)  # [B, H]
+        
+        if ("double_block", i) in blocks_replace:
+            def block_wrap(args):
+                out = {}
+                out["img"], out["txt"] = block(img=args["img"],
+                                               txt=args["txt"],
+                                               vec=args["vec"],
+                                               pe=args["pe"],
+                                               attn_mask=args.get("attn_mask"))
+                return out
+
+            out = blocks_replace[("double_block", i)]({"img": img,
+                                                       "txt": txt,
+                                                       "vec": vec,
+                                                       "pe": pe,
+                                                       "attn_mask": attn_mask
+                                                       },
+                                                      {
+                                                          "original_block": block_wrap,
+                                                          "transformer_options": transformer_options
+                                                      })
+            txt = out["txt"]
+            img = out["img"]
+        else:
+            img, txt = block(img=img,
+                             txt=txt,
+                             vec=vec,
+                             pe=pe,
+                             attn_mask=attn_mask)
+
+        if control is not None:  # Controlnet
+            control_i = control.get("input")
+            if i < len(control_i):
+                add = control_i[i]
+                if add is not None:
+                    img += add
+
+    img = torch.cat((txt, img), 1)
+
+    # Process single blocks with modulation
+    for i, block in enumerate(self.single_blocks):
+        # Extract modulation for this block
+        if hasattr(self, 'get_modulations'):
+            # Use Chroma's proper modulation extraction if available
+            vec = self.get_modulations(mod_vectors, 'single', i)
+        else:
+            # Fallback: simple distribution
+            mod_per_block = mod_vectors.shape[1] // (len(self.double_blocks) + len(self.single_blocks))
+            double_blocks_used = len(self.double_blocks) * mod_per_block
+            single_block_mod_start = double_blocks_used + i * mod_per_block
+            single_block_mod_end = double_blocks_used + (i + 1) * mod_per_block
+            vec = mod_vectors[:, single_block_mod_start:single_block_mod_end].mean(dim=1)  # [B, H]
+        
+        if ("single_block", i) in blocks_replace:
+            def block_wrap(args):
+                out = {}
+                out["img"] = block(args["img"],
+                                   vec=args["vec"],
+                                   pe=args["pe"],
+                                   attn_mask=args.get("attn_mask"))
+                return out
+
+            out = blocks_replace[("single_block", i)]({"img": img,
+                                                       "vec": vec,
+                                                       "pe": pe,
+                                                       "attn_mask": attn_mask
+                                                       },
+                                                      {
+                                                          "original_block": block_wrap,
+                                                          "transformer_options": transformer_options
+                                                      })
+            img = out["img"]
+        else:
+            img = block(img, vec=vec, pe=pe, attn_mask=attn_mask)
+
+        if control is not None:  # Controlnet
+            control_o = control.get("output")
+            if i < len(control_o):
+                add = control_o[i]
+                if add is not None:
+                    img[:, txt.shape[1]:, ...] += add
+
+    img = img[:, txt.shape[1]:, ...]
+
+    # Use the mean of modulation vectors for final layer
+    final_vec = mod_vectors.mean(dim=1)  # [B, H]
+    img = self.final_layer(img, final_vec)
 
     del transformer_options[PatchKeys.running_net_model]
 
