@@ -388,18 +388,19 @@ def pulid_forward_orig_chroma(
             print(f"[PuLID-Chroma] ✅ Block {i}: Modulation already 3072 dims")
         
         # Create Chroma's expected modulation structure: ((img_mod1, img_mod2), (txt_mod1, txt_mod2))
-        # Split 3072 dims into 8 components of 384 each: 4 for shift, 4 for scale
-        component_size = 3072 // 8  # 384
+        # Each modulation component needs to match the image feature dimension (3072)
+        # We'll use the full 3072-dimensional vector for each component
         
-        # Extract shift and scale for each modulation component  
-        img_mod1_shift = vec_raw[:, 0*component_size:1*component_size]
-        img_mod1_scale = vec_raw[:, 1*component_size:2*component_size]
-        img_mod2_shift = vec_raw[:, 2*component_size:3*component_size]
-        img_mod2_scale = vec_raw[:, 3*component_size:4*component_size]
-        txt_mod1_shift = vec_raw[:, 4*component_size:5*component_size]
-        txt_mod1_scale = vec_raw[:, 5*component_size:6*component_size]
-        txt_mod2_shift = vec_raw[:, 6*component_size:7*component_size]
-        txt_mod2_scale = vec_raw[:, 7*component_size:8*component_size]
+        # Use the full 3072-dimensional vector for each modulation component
+        # This matches the image tensor's feature dimension
+        img_mod1_shift = vec_raw  # [B, 3072]
+        img_mod1_scale = vec_raw  # [B, 3072] 
+        img_mod2_shift = vec_raw  # [B, 3072]
+        img_mod2_scale = vec_raw  # [B, 3072]
+        txt_mod1_shift = vec_raw  # [B, 3072]
+        txt_mod1_scale = vec_raw  # [B, 3072]
+        txt_mod2_shift = vec_raw  # [B, 3072]
+        txt_mod2_scale = vec_raw  # [B, 3072]
         
         # Create modulation objects with shift and scale attributes
         img_mod1 = ModulationParams(shift=img_mod1_shift, scale=img_mod1_scale)
