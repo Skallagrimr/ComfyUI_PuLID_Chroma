@@ -4,10 +4,14 @@ from torch import Tensor
 from comfy.ldm.flux.layers import timestep_embedding
 import comfy
 from .patch_util import PatchKeys
+from collections import namedtuple
 
 def is_chroma_model(model):
     """Detect if the model is Chroma or Flux-based."""
     return (model.__class__.__name__ == "Chroma") or hasattr(model, "distilled_guidance_layer")
+
+# Create a modulation object that has shift and scale attributes
+ModulationParams = namedtuple('ModulationParams', ['shift', 'scale'])
 
 def set_model_dit_patch_replace(model, patch_kwargs, key):
     to = model.model_options["transformer_options"]
@@ -318,19 +322,34 @@ def pulid_forward_orig_chroma(
         vec_raw = mod_vectors[:, block_mod_start:block_mod_end].mean(dim=1)  # [B, H]
         
         # Chroma expects vec to be structured as ((img_mod1, img_mod2), (txt_mod1, txt_mod2))
-        # Split the vector into 4 parts for the expected format
+        # where each mod has .shift and .scale attributes
         H = vec_raw.shape[-1]
-        vec_split = torch.chunk(vec_raw, 4, dim=-1)  # Split into 4 equal parts
-        # If the split doesn't work evenly, use the full vector for each component
-        if len(vec_split) == 4:
-            img_mod1, img_mod2, txt_mod1, txt_mod2 = vec_split
+        
+        # Split the vector into 8 parts: 4 for shift, 4 for scale
+        # Each modulation component needs both shift and scale
+        eighth_size = H // 8
+        if eighth_size > 0:
+            # Split into 8 equal parts for shift and scale components
+            img_mod1_shift = vec_raw[..., :eighth_size]
+            img_mod1_scale = vec_raw[..., eighth_size:eighth_size*2]
+            img_mod2_shift = vec_raw[..., eighth_size*2:eighth_size*3]
+            img_mod2_scale = vec_raw[..., eighth_size*3:eighth_size*4]
+            txt_mod1_shift = vec_raw[..., eighth_size*4:eighth_size*5]
+            txt_mod1_scale = vec_raw[..., eighth_size*5:eighth_size*6]
+            txt_mod2_shift = vec_raw[..., eighth_size*6:eighth_size*7]
+            txt_mod2_scale = vec_raw[..., eighth_size*7:eighth_size*8]
         else:
-            # Fallback: use quarter of the vector for each component
-            quarter_size = H // 4
-            img_mod1 = vec_raw[..., :quarter_size]
-            img_mod2 = vec_raw[..., quarter_size:quarter_size*2]
-            txt_mod1 = vec_raw[..., quarter_size*2:quarter_size*3]
-            txt_mod2 = vec_raw[..., quarter_size*3:quarter_size*4]
+            # Fallback: use the same vector for all components if too small
+            img_mod1_shift = img_mod1_scale = vec_raw
+            img_mod2_shift = img_mod2_scale = vec_raw
+            txt_mod1_shift = txt_mod1_scale = vec_raw
+            txt_mod2_shift = txt_mod2_scale = vec_raw
+        
+        # Create modulation objects with shift and scale attributes
+        img_mod1 = ModulationParams(shift=img_mod1_shift, scale=img_mod1_scale)
+        img_mod2 = ModulationParams(shift=img_mod2_shift, scale=img_mod2_scale)
+        txt_mod1 = ModulationParams(shift=txt_mod1_shift, scale=txt_mod1_scale)
+        txt_mod2 = ModulationParams(shift=txt_mod2_shift, scale=txt_mod2_scale)
         
         vec = ((img_mod1, img_mod2), (txt_mod1, txt_mod2))
         
