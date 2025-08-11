@@ -8,7 +8,24 @@ from collections import namedtuple
 
 def is_chroma_model(model):
     """Detect if the model is Chroma or Flux-based."""
-    return (model.__class__.__name__ == "Chroma") or hasattr(model, "distilled_guidance_layer")
+    is_chroma = (model.__class__.__name__ == "Chroma") or hasattr(model, "distilled_guidance_layer")
+    
+    # Log detection results for debugging
+    model_class = model.__class__.__name__
+    has_distilled_guidance = hasattr(model, "distilled_guidance_layer")
+    
+    if is_chroma:
+        print(f"[PuLID-Chroma] ✅ Chroma model detected:")
+        print(f"  - Model class: {model_class}")
+        print(f"  - Has distilled_guidance_layer: {has_distilled_guidance}")
+        print(f"  - Using Chroma-specific forward function")
+    else:
+        print(f"[PuLID-Chroma] ℹ️ Flux model detected:")
+        print(f"  - Model class: {model_class}")
+        print(f"  - Has distilled_guidance_layer: {has_distilled_guidance}")
+        print(f"  - Using Flux-specific forward function")
+    
+    return is_chroma
 
 # Create a modulation object that has shift and scale attributes
 ModulationParams = namedtuple('ModulationParams', ['shift', 'scale'])
@@ -157,6 +174,11 @@ def pulid_forward_orig(
     transformer_options={},
     attn_mask: Tensor = None,
 ) -> Tensor:
+    print(f"[PuLID-Chroma] 🔄 Executing Flux-specific forward function")
+    print(f"  - Image shape: {img.shape}")
+    print(f"  - Text shape: {txt.shape}")
+    print(f"  - Timesteps: {timesteps.shape}")
+    
     patches_replace = transformer_options.get("patches_replace", {})
 
     if img.ndim != 3 or txt.ndim != 3:
@@ -270,7 +292,13 @@ def pulid_forward_orig_chroma(
     transformer_options={},
     attn_mask: Tensor = None,
 ) -> Tensor:
-    """Chroma-specific forward function that uses modulation vectors instead of time_in."""
+    """Chroma-specific forward function that integrates PuLID with Chroma's modulation system."""
+    print(f"[PuLID-Chroma] 🚀 Executing Chroma-specific forward function")
+    print(f"  - Image shape: {img.shape}")
+    print(f"  - Context shape: {context.shape}")
+    print(f"  - Timesteps: {timesteps.shape}")
+    print(f"  - Guidance: {guidance.shape}")
+    
     patches_replace = transformer_options.get("patches_replace", {})
 
     if img.ndim != 3 or context.ndim != 3:
@@ -281,7 +309,25 @@ def pulid_forward_orig_chroma(
     # Get PuLID identity features from transformer options
     pulid_temp_attrs = transformer_options.get(PatchKeys.pulid_patch_key_attrs, {})
     
-    # 1) Recreate Chroma's modulation path (based on your analysis)
+    # Log PuLID features detection
+    has_identity_features = 'pulid_identity_features' in pulid_temp_attrs
+    has_weight = 'pulid_weight' in pulid_temp_attrs
+    patch_count = len(patches_replace.get("dit", {}))
+    
+    print(f"[PuLID-Chroma] 🎭 PuLID Features Status:")
+    print(f"  - Identity features present: {has_identity_features}")
+    print(f"  - Weight present: {has_weight}")
+    print(f"  - Active patches: {patch_count}")
+    
+    if has_identity_features:
+        id_features = pulid_temp_attrs['pulid_identity_features']
+        weight = pulid_temp_attrs.get('pulid_weight', 1.0)
+        print(f"  - Identity features shape: {id_features.shape if hasattr(id_features, 'shape') else 'N/A'}")
+        print(f"  - Weight value: {weight}")
+    else:
+        print(f"  - No identity features found, running without PuLID injection")
+    
+    # 1) Recreate Chroma's modulation path using distilled guidance
     mod_index_length = 344
     distill_timestep = timestep_embedding(timesteps.detach().clone(), 16).to(img.device, img.dtype)
     distil_guidance = timestep_embedding(guidance.detach().clone(), 16).to(img.device, img.dtype)
@@ -295,13 +341,13 @@ def pulid_forward_orig_chroma(
 
     input_vec = torch.cat([timestep_guidance, modulation_index], dim=-1)  # [B, 344, 64]
     mod_vectors = self.distilled_guidance_layer(input_vec)                  # [B, 344, H]
+    
+    print(f"[PuLID-Chroma] 🔧 Modulation vectors created:")
+    print(f"  - Input vector shape: {input_vec.shape}")
+    print(f"  - Modulation vectors shape: {mod_vectors.shape}")
+    print(f"  - Modulation dimension (H): {mod_vectors.shape[-1]}")
 
-    # 2) For Chroma, we rely on the patch mechanism for identity injection
-    # The identity features are handled through the patch system in individual blocks
-    # So we don't need to modify mod_vectors here, just prepare them as Chroma expects
-
-    # 3) Continue with Chroma's forward process
-    # Process text and image inputs
+    # 2) Process text and image inputs
     txt = self.txt_in(context)
     img = self.img_in(img)
     
@@ -310,40 +356,45 @@ def pulid_forward_orig_chroma(
 
     blocks_replace = patches_replace.get("dit", {})
 
-    # Process double blocks with modulation
-    # We'll need to implement proper modulation extraction based on Chroma's actual implementation
-    # For now, use a simpler approach that distributes the modulation evenly
+    # Process double blocks with proper 3072-dimensional modulation
     for i, block in enumerate(self.double_blocks):
-        # Extract modulation for this block using simple distribution
-        # This is a simplified approach that distributes the modulation evenly across blocks
+        # Extract modulation for this block - ensure we get 3072 dimensions
+        # Each block needs a modulation vector that matches Chroma's expected dim=3072
         mod_per_block = mod_vectors.shape[1] // (len(self.double_blocks) + len(self.single_blocks))
         block_mod_start = i * mod_per_block
         block_mod_end = (i + 1) * mod_per_block
-        vec_raw = mod_vectors[:, block_mod_start:block_mod_end].mean(dim=1)  # [B, H]
         
-        # Chroma expects vec to be structured as ((img_mod1, img_mod2), (txt_mod1, txt_mod2))
-        # where each mod has .shift and .scale attributes
+        # Get the modulation chunk for this block
+        vec_chunk = mod_vectors[:, block_mod_start:block_mod_end]  # [B, chunk_size, H]
+        vec_raw = vec_chunk.mean(dim=1)  # [B, H]
+        
+        # Ensure we have 3072 dimensions as expected by Chroma
         H = vec_raw.shape[-1]
-        
-        # Split the vector into 8 parts: 4 for shift, 4 for scale
-        # Each modulation component needs both shift and scale
-        eighth_size = H // 8
-        if eighth_size > 0:
-            # Split into 8 equal parts for shift and scale components
-            img_mod1_shift = vec_raw[..., :eighth_size]
-            img_mod1_scale = vec_raw[..., eighth_size:eighth_size*2]
-            img_mod2_shift = vec_raw[..., eighth_size*2:eighth_size*3]
-            img_mod2_scale = vec_raw[..., eighth_size*3:eighth_size*4]
-            txt_mod1_shift = vec_raw[..., eighth_size*4:eighth_size*5]
-            txt_mod1_scale = vec_raw[..., eighth_size*5:eighth_size*6]
-            txt_mod2_shift = vec_raw[..., eighth_size*6:eighth_size*7]
-            txt_mod2_scale = vec_raw[..., eighth_size*7:eighth_size*8]
+        if H < 3072:
+            # Repeat the vector to reach 3072 dimensions
+            repeats = (3072 + H - 1) // H  # Ceiling division
+            vec_raw = vec_raw.repeat(1, repeats)[:, :3072]  # [B, 3072]
+            print(f"[PuLID-Chroma] 📏 Block {i}: Expanded modulation from {H} to 3072 dims (repeated {repeats}x)")
+        elif H > 3072:
+            # Truncate to 3072 dimensions
+            vec_raw = vec_raw[:, :3072]  # [B, 3072]
+            print(f"[PuLID-Chroma] ✂️ Block {i}: Truncated modulation from {H} to 3072 dims")
         else:
-            # Fallback: use the same vector for all components if too small
-            img_mod1_shift = img_mod1_scale = vec_raw
-            img_mod2_shift = img_mod2_scale = vec_raw
-            txt_mod1_shift = txt_mod1_scale = vec_raw
-            txt_mod2_shift = txt_mod2_scale = vec_raw
+            print(f"[PuLID-Chroma] ✅ Block {i}: Modulation already 3072 dims")
+        
+        # Create Chroma's expected modulation structure: ((img_mod1, img_mod2), (txt_mod1, txt_mod2))
+        # Split 3072 dims into 8 components of 384 each: 4 for shift, 4 for scale
+        component_size = 3072 // 8  # 384
+        
+        # Extract shift and scale for each modulation component  
+        img_mod1_shift = vec_raw[:, 0*component_size:1*component_size]
+        img_mod1_scale = vec_raw[:, 1*component_size:2*component_size]
+        img_mod2_shift = vec_raw[:, 2*component_size:3*component_size]
+        img_mod2_scale = vec_raw[:, 3*component_size:4*component_size]
+        txt_mod1_shift = vec_raw[:, 4*component_size:5*component_size]
+        txt_mod1_scale = vec_raw[:, 5*component_size:6*component_size]
+        txt_mod2_shift = vec_raw[:, 6*component_size:7*component_size]
+        txt_mod2_scale = vec_raw[:, 7*component_size:8*component_size]
         
         # Create modulation objects with shift and scale attributes
         img_mod1 = ModulationParams(shift=img_mod1_shift, scale=img_mod1_scale)
@@ -352,7 +403,7 @@ def pulid_forward_orig_chroma(
         txt_mod2 = ModulationParams(shift=txt_mod2_shift, scale=txt_mod2_scale)
         
         vec = ((img_mod1, img_mod2), (txt_mod1, txt_mod2))
-        
+
         if ("double_block", i) in blocks_replace:
             def block_wrap(args):
                 out = {}
@@ -376,11 +427,7 @@ def pulid_forward_orig_chroma(
             txt = out["txt"]
             img = out["img"]
         else:
-            img, txt = block(img=img,
-                             txt=txt,
-                             vec=vec,
-                             pe=pe,
-                             attn_mask=attn_mask)
+            img, txt = block(img=img, txt=txt, vec=vec, pe=pe, attn_mask=attn_mask)
 
         if control is not None:  # Controlnet
             control_i = control.get("input")
@@ -391,16 +438,16 @@ def pulid_forward_orig_chroma(
 
     img = torch.cat((txt, img), 1)
 
-    # Process single blocks with modulation
+    # Process single blocks - these may expect a simpler tensor format
     for i, block in enumerate(self.single_blocks):
-        # Extract modulation for this block using simple distribution
+        # Extract modulation for single blocks 
         mod_per_block = mod_vectors.shape[1] // (len(self.double_blocks) + len(self.single_blocks))
         double_blocks_used = len(self.double_blocks) * mod_per_block
         single_block_mod_start = double_blocks_used + i * mod_per_block
         single_block_mod_end = double_blocks_used + (i + 1) * mod_per_block
-        vec = mod_vectors[:, single_block_mod_start:single_block_mod_end].mean(dim=1)  # [B, H]
         
-        # Single blocks might expect a simple tensor format (not the tuple format like double blocks)
+        vec_chunk = mod_vectors[:, single_block_mod_start:single_block_mod_end]
+        vec = vec_chunk.mean(dim=1)  # [B, H] - single blocks might use simple tensor format
         
         if ("single_block", i) in blocks_replace:
             def block_wrap(args):
@@ -433,12 +480,15 @@ def pulid_forward_orig_chroma(
 
     img = img[:, txt.shape[1]:, ...]
 
-    # Use the mean of modulation vectors for final layer
+    # Final layer with modulation
     final_vec = mod_vectors.mean(dim=1)  # [B, H]
     img = self.final_layer(img, final_vec)
 
     del transformer_options[PatchKeys.running_net_model]
 
+    print(f"[PuLID-Chroma] ✨ Chroma-specific forward completed successfully")
+    print(f"  - Final output shape: {img.shape}")
+    
     return img
 
 

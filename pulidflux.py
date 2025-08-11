@@ -610,10 +610,13 @@ def pulid_outer_sample_wrappers_with_override(wrapper_executor, noise, latent_im
     diffusion_model = cfg_guider.model_patcher.model.diffusion_model
     
     # Choose appropriate forward function based on model type
+    print(f"[PuLID-Chroma] 🔍 Detecting model type...")
     if is_chroma_model(diffusion_model):
         target_forward = pulid_forward_orig_chroma
+        print(f"[PuLID-Chroma] 🎯 Setting Chroma hook on diffusion model")
     else:
         target_forward = pulid_forward_orig
+        print(f"[PuLID-Chroma] 🎯 Setting Flux hook on diffusion model")
     
     set_hook(diffusion_model, target_forward)
     try :
