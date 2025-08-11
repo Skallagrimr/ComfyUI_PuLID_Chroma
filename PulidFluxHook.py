@@ -519,3 +519,8 @@ def clean_hook(diffusion_model):
     if hasattr(diffusion_model, 'old_forward_orig_for_pulid'):
         diffusion_model.forward_orig = diffusion_model.old_forward_orig_for_pulid
         del diffusion_model.old_forward_orig_for_pulid
+
+def pulid_patch_double_blocks_after(img, txt, transformer_options):
+    pulid_temp_attrs = transformer_options.get(PatchKeys.pulid_patch_key_attrs, {})
+    pulid_temp_attrs['double_blocks_txt'] = txt
+    return img, txt
