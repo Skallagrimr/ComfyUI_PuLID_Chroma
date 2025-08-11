@@ -310,17 +310,12 @@ def pulid_forward_orig_chroma(
     # We'll need to implement proper modulation extraction based on Chroma's actual implementation
     # For now, use a simpler approach that distributes the modulation evenly
     for i, block in enumerate(self.double_blocks):
-        # Extract modulation for this block - this is a simplified approach
-        # In the real Chroma implementation, there should be a get_modulations() function
-        if hasattr(self, 'get_modulations'):
-            # Use Chroma's proper modulation extraction if available
-            vec = self.get_modulations(mod_vectors, 'double', i)
-        else:
-            # Fallback: simple distribution
-            mod_per_block = mod_vectors.shape[1] // (len(self.double_blocks) + len(self.single_blocks))
-            block_mod_start = i * mod_per_block
-            block_mod_end = (i + 1) * mod_per_block
-            vec = mod_vectors[:, block_mod_start:block_mod_end].mean(dim=1)  # [B, H]
+        # Extract modulation for this block using simple distribution
+        # This is a simplified approach that distributes the modulation evenly across blocks
+        mod_per_block = mod_vectors.shape[1] // (len(self.double_blocks) + len(self.single_blocks))
+        block_mod_start = i * mod_per_block
+        block_mod_end = (i + 1) * mod_per_block
+        vec = mod_vectors[:, block_mod_start:block_mod_end].mean(dim=1)  # [B, H]
         
         if ("double_block", i) in blocks_replace:
             def block_wrap(args):
@@ -362,17 +357,12 @@ def pulid_forward_orig_chroma(
 
     # Process single blocks with modulation
     for i, block in enumerate(self.single_blocks):
-        # Extract modulation for this block
-        if hasattr(self, 'get_modulations'):
-            # Use Chroma's proper modulation extraction if available
-            vec = self.get_modulations(mod_vectors, 'single', i)
-        else:
-            # Fallback: simple distribution
-            mod_per_block = mod_vectors.shape[1] // (len(self.double_blocks) + len(self.single_blocks))
-            double_blocks_used = len(self.double_blocks) * mod_per_block
-            single_block_mod_start = double_blocks_used + i * mod_per_block
-            single_block_mod_end = double_blocks_used + (i + 1) * mod_per_block
-            vec = mod_vectors[:, single_block_mod_start:single_block_mod_end].mean(dim=1)  # [B, H]
+        # Extract modulation for this block using simple distribution
+        mod_per_block = mod_vectors.shape[1] // (len(self.double_blocks) + len(self.single_blocks))
+        double_blocks_used = len(self.double_blocks) * mod_per_block
+        single_block_mod_start = double_blocks_used + i * mod_per_block
+        single_block_mod_end = double_blocks_used + (i + 1) * mod_per_block
+        vec = mod_vectors[:, single_block_mod_start:single_block_mod_end].mean(dim=1)  # [B, H]
         
         if ("single_block", i) in blocks_replace:
             def block_wrap(args):
