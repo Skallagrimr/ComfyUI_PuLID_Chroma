@@ -315,7 +315,24 @@ def pulid_forward_orig_chroma(
         mod_per_block = mod_vectors.shape[1] // (len(self.double_blocks) + len(self.single_blocks))
         block_mod_start = i * mod_per_block
         block_mod_end = (i + 1) * mod_per_block
-        vec = mod_vectors[:, block_mod_start:block_mod_end].mean(dim=1)  # [B, H]
+        vec_raw = mod_vectors[:, block_mod_start:block_mod_end].mean(dim=1)  # [B, H]
+        
+        # Chroma expects vec to be structured as ((img_mod1, img_mod2), (txt_mod1, txt_mod2))
+        # Split the vector into 4 parts for the expected format
+        H = vec_raw.shape[-1]
+        vec_split = torch.chunk(vec_raw, 4, dim=-1)  # Split into 4 equal parts
+        # If the split doesn't work evenly, use the full vector for each component
+        if len(vec_split) == 4:
+            img_mod1, img_mod2, txt_mod1, txt_mod2 = vec_split
+        else:
+            # Fallback: use quarter of the vector for each component
+            quarter_size = H // 4
+            img_mod1 = vec_raw[..., :quarter_size]
+            img_mod2 = vec_raw[..., quarter_size:quarter_size*2]
+            txt_mod1 = vec_raw[..., quarter_size*2:quarter_size*3]
+            txt_mod2 = vec_raw[..., quarter_size*3:quarter_size*4]
+        
+        vec = ((img_mod1, img_mod2), (txt_mod1, txt_mod2))
         
         if ("double_block", i) in blocks_replace:
             def block_wrap(args):
@@ -363,6 +380,8 @@ def pulid_forward_orig_chroma(
         single_block_mod_start = double_blocks_used + i * mod_per_block
         single_block_mod_end = double_blocks_used + (i + 1) * mod_per_block
         vec = mod_vectors[:, single_block_mod_start:single_block_mod_end].mean(dim=1)  # [B, H]
+        
+        # Single blocks might expect a simple tensor format (not the tuple format like double blocks)
         
         if ("single_block", i) in blocks_replace:
             def block_wrap(args):
