@@ -528,7 +528,28 @@ def pulid_forward_orig_chroma(
     img = img[:, txt.shape[1]:, ...]
 
     # Final layer with modulation
-    final_vec = mod_vectors.mean(dim=1)  # [B, H]
+    final_vec_raw = mod_vectors.mean(dim=1)  # [B, H]
+    
+    # Ensure final layer modulation is also 3072 dimensions
+    H = final_vec_raw.shape[-1]
+    if H < 3072:
+        # Repeat the vector to reach 3072 dimensions
+        repeats = (3072 + H - 1) // H  # Ceiling division
+        final_vec_raw = final_vec_raw.repeat(1, repeats)[:, :3072]  # [B, 3072]
+        print(f"[PuLID-Chroma] 📏 Final layer: Expanded modulation from {H} to 3072 dims (repeated {repeats}x)")
+    elif H > 3072:
+        # Truncate to 3072 dimensions
+        final_vec_raw = final_vec_raw[:, :3072]  # [B, 3072]
+        print(f"[PuLID-Chroma] ✂️ Final layer: Truncated modulation from {H} to 3072 dims")
+    else:
+        print(f"[PuLID-Chroma] ✅ Final layer: Modulation already 3072 dims")
+    
+    # Final layer expects (shift, scale) tuple
+    final_vec = (final_vec_raw, final_vec_raw)  # Use same tensor for both shift and scale
+    
+    print(f"[PuLID-Chroma] 🔍 Final layer modulation:")
+    print(f"  - shift shape: {final_vec_raw.shape}, scale shape: {final_vec_raw.shape}")
+    
     img = self.final_layer(img, final_vec)
 
     del transformer_options[PatchKeys.running_net_model]
